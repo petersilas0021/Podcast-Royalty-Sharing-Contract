@@ -173,3 +173,246 @@
         (stx-transfer? earnings tx-sender (var-get contract-owner))
     )
 )
+
+(define-private (calculate-host-share
+        (amount uint)
+        (percentage uint)
+    )
+    (/ (* amount percentage) u100)
+)
+
+(define-private (distribute-to-host
+        (podcast-id uint)
+        (host principal)
+        (amount uint)
+    )
+    (let (
+            (host-info (unwrap! (get-host-info podcast-id host) ERR-HOST-NOT-FOUND))
+            (host-share (calculate-host-share amount (get share-percentage host-info)))
+        )
+        (map-set podcast-hosts {
+            podcast-id: podcast-id,
+            host: host,
+        } {
+            share-percentage: (get share-percentage host-info),
+            earnings: (+ (get earnings host-info) host-share),
+            joined-at: (get joined-at host-info),
+        })
+        (ok host-share)
+    )
+)
+
+(define-public (distribute-revenue-to-hosts
+        (podcast-id uint)
+        (amount uint)
+        (hosts (list 10 principal))
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (distribution-id (var-get next-distribution-id))
+        )
+        (asserts! (>= (stx-get-balance tx-sender) amount) ERR-INSUFFICIENT-FUNDS)
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        (map distribute-to-host
+            (list
+                podcast-id                 podcast-id                 podcast-id
+                                podcast-id                 podcast-id
+                podcast-id                 podcast-id                 podcast-id
+                                podcast-id                 podcast-id
+            )
+            hosts
+            (list
+                amount                 amount                 amount
+                                amount                 amount                 amount
+                                amount                 amount                 amount
+                amount
+            ))
+        (map-set revenue-distributions { distribution-id: distribution-id } {
+            podcast-id: podcast-id,
+            amount: amount,
+            distributed-at: burn-block-height,
+        })
+        (map-set podcasts { podcast-id: podcast-id } {
+            name: (get name podcast),
+            total-revenue: (+ (get total-revenue podcast) amount),
+            host-count: (get host-count podcast),
+            created-at: (get created-at podcast),
+        })
+        (var-set next-distribution-id (+ distribution-id u1))
+        (ok true)
+    )
+)
+
+(define-public (withdraw-earnings-fixed (podcast-id uint))
+    (let (
+            (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-HOST-NOT-FOUND))
+            (earnings (get earnings host-info))
+        )
+        (asserts! (> earnings u0) ERR-INSUFFICIENT-FUNDS)
+        (map-set podcast-hosts {
+            podcast-id: podcast-id,
+            host: tx-sender,
+        } {
+            share-percentage: (get share-percentage host-info),
+            earnings: u0,
+            joined-at: (get joined-at host-info),
+        })
+        (as-contract (stx-transfer? earnings tx-sender tx-sender))
+    )
+)
+
+(define-constant ERR-PROPOSAL-NOT-FOUND (err u106))
+(define-constant ERR-ALREADY-VOTED (err u107))
+(define-constant ERR-VOTING-ENDED (err u108))
+(define-constant ERR-PROPOSAL-NOT-PASSED (err u109))
+
+(define-map proposals
+    { proposal-id: uint }
+    {
+        podcast-id: uint,
+        proposer: principal,
+        proposal-type: (string-ascii 32),
+        target-host: (optional principal),
+        new-percentage: (optional uint),
+        description: (string-ascii 256),
+        yes-votes: uint,
+        no-votes: uint,
+        total-eligible-voters: uint,
+        created-at: uint,
+        voting-end-height: uint,
+        executed: bool,
+    }
+)
+
+(define-map votes
+    {
+        proposal-id: uint,
+        voter: principal,
+    }
+    {
+        vote: bool,
+        voted-at: uint,
+    }
+)
+
+(define-data-var next-proposal-id uint u1)
+
+(define-read-only (get-proposal (proposal-id uint))
+    (map-get? proposals { proposal-id: proposal-id })
+)
+
+(define-read-only (get-vote
+        (proposal-id uint)
+        (voter principal)
+    )
+    (map-get? votes {
+        proposal-id: proposal-id,
+        voter: voter,
+    })
+)
+
+(define-public (create-proposal
+        (podcast-id uint)
+        (proposal-type (string-ascii 32))
+        (target-host (optional principal))
+        (new-percentage (optional uint))
+        (description (string-ascii 256))
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-NOT-AUTHORIZED))
+            (proposal-id (var-get next-proposal-id))
+        )
+        (map-set proposals { proposal-id: proposal-id } {
+            podcast-id: podcast-id,
+            proposer: tx-sender,
+            proposal-type: proposal-type,
+            target-host: target-host,
+            new-percentage: new-percentage,
+            description: description,
+            yes-votes: u0,
+            no-votes: u0,
+            total-eligible-voters: (get host-count podcast),
+            created-at: burn-block-height,
+            voting-end-height: (+ burn-block-height u144),
+            executed: false,
+        })
+        (var-set next-proposal-id (+ proposal-id u1))
+        (ok proposal-id)
+    )
+)
+
+(define-public (vote-on-proposal
+        (proposal-id uint)
+        (vote-yes bool)
+    )
+    (let (
+            (proposal (unwrap! (get-proposal proposal-id) ERR-PROPOSAL-NOT-FOUND))
+            (host-info (unwrap! (get-host-info (get podcast-id proposal) tx-sender)
+                ERR-NOT-AUTHORIZED
+            ))
+        )
+        (asserts! (is-none (get-vote proposal-id tx-sender)) ERR-ALREADY-VOTED)
+        (asserts! (<= burn-block-height (get voting-end-height proposal))
+            ERR-VOTING-ENDED
+        )
+        (map-set votes {
+            proposal-id: proposal-id,
+            voter: tx-sender,
+        } {
+            vote: vote-yes,
+            voted-at: burn-block-height,
+        })
+        (map-set proposals { proposal-id: proposal-id } {
+            podcast-id: (get podcast-id proposal),
+            proposer: (get proposer proposal),
+            proposal-type: (get proposal-type proposal),
+            target-host: (get target-host proposal),
+            new-percentage: (get new-percentage proposal),
+            description: (get description proposal),
+            yes-votes: (if vote-yes
+                (+ (get yes-votes proposal) u1)
+                (get yes-votes proposal)
+            ),
+            no-votes: (if vote-yes
+                (get no-votes proposal)
+                (+ (get no-votes proposal) u1)
+            ),
+            total-eligible-voters: (get total-eligible-voters proposal),
+            created-at: (get created-at proposal),
+            voting-end-height: (get voting-end-height proposal),
+            executed: (get executed proposal),
+        })
+        (ok true)
+    )
+)
+
+(define-public (execute-proposal (proposal-id uint))
+    (let (
+            (proposal (unwrap! (get-proposal proposal-id) ERR-PROPOSAL-NOT-FOUND))
+            (majority-threshold (/ (get total-eligible-voters proposal) u2))
+        )
+        (asserts! (> burn-block-height (get voting-end-height proposal))
+            ERR-VOTING-ENDED
+        )
+        (asserts! (not (get executed proposal)) ERR-PROPOSAL-NOT-PASSED)
+        (asserts! (> (get yes-votes proposal) majority-threshold)
+            ERR-PROPOSAL-NOT-PASSED
+        )
+        (map-set proposals { proposal-id: proposal-id } {
+            podcast-id: (get podcast-id proposal),
+            proposer: (get proposer proposal),
+            proposal-type: (get proposal-type proposal),
+            target-host: (get target-host proposal),
+            new-percentage: (get new-percentage proposal),
+            description: (get description proposal),
+            yes-votes: (get yes-votes proposal),
+            no-votes: (get no-votes proposal),
+            total-eligible-voters: (get total-eligible-voters proposal),
+            created-at: (get created-at proposal),
+            voting-end-height: (get voting-end-height proposal),
+            executed: true,
+        })
+        (ok true)
+    )
+)
