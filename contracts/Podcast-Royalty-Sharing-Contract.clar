@@ -75,6 +75,16 @@
             earnings: u0,
             joined-at: burn-block-height,
         })
+        (map-set host-analytics {
+            podcast-id: podcast-id,
+            host: tx-sender,
+        } {
+            activity-score: u0,
+            episodes-contributed: u0,
+            total-distributions-received: u0,
+            last-activity-height: burn-block-height,
+            performance-rating: u50,
+        })
         (var-set next-podcast-id (+ podcast-id u1))
         (ok podcast-id)
     )
@@ -99,6 +109,16 @@
             share-percentage: share-percentage,
             earnings: u0,
             joined-at: burn-block-height,
+        })
+        (map-set host-analytics {
+            podcast-id: podcast-id,
+            host: new-host,
+        } {
+            activity-score: u0,
+            episodes-contributed: u0,
+            total-distributions-received: u0,
+            last-activity-height: burn-block-height,
+            performance-rating: u50,
         })
         (map-set podcasts { podcast-id: podcast-id } {
             name: (get name podcast),
@@ -216,15 +236,15 @@
         (map distribute-to-host
             (list
                 podcast-id                 podcast-id                 podcast-id
-                                podcast-id                 podcast-id
+                podcast-id                 podcast-id
                 podcast-id                 podcast-id                 podcast-id
-                                podcast-id                 podcast-id
+                podcast-id                 podcast-id
             )
             hosts
             (list
                 amount                 amount                 amount
-                                amount                 amount                 amount
-                                amount                 amount                 amount
+                amount                 amount                 amount
+                amount                 amount                 amount
                 amount
             ))
         (map-set revenue-distributions { distribution-id: distribution-id } {
@@ -265,6 +285,7 @@
 (define-constant ERR-ALREADY-VOTED (err u107))
 (define-constant ERR-VOTING-ENDED (err u108))
 (define-constant ERR-PROPOSAL-NOT-PASSED (err u109))
+(define-constant ERR-INVALID-ACTIVITY-SCORE (err u110))
 
 (define-map proposals
     { proposal-id: uint }
@@ -297,6 +318,20 @@
 
 (define-data-var next-proposal-id uint u1)
 
+(define-map host-analytics
+    {
+        podcast-id: uint,
+        host: principal,
+    }
+    {
+        activity-score: uint,
+        episodes-contributed: uint,
+        total-distributions-received: uint,
+        last-activity-height: uint,
+        performance-rating: uint,
+    }
+)
+
 (define-read-only (get-proposal (proposal-id uint))
     (map-get? proposals { proposal-id: proposal-id })
 )
@@ -308,6 +343,16 @@
     (map-get? votes {
         proposal-id: proposal-id,
         voter: voter,
+    })
+)
+
+(define-read-only (get-host-analytics
+        (podcast-id uint)
+        (host principal)
+    )
+    (map-get? host-analytics {
+        podcast-id: podcast-id,
+        host: host,
     })
 )
 
@@ -412,6 +457,106 @@
             created-at: (get created-at proposal),
             voting-end-height: (get voting-end-height proposal),
             executed: true,
+        })
+        (ok true)
+    )
+)
+
+(define-public (update-host-activity
+        (podcast-id uint)
+        (host principal)
+        (activity-score uint)
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id host) ERR-HOST-NOT-FOUND))
+            (current-analytics (default-to {
+                activity-score: u0,
+                episodes-contributed: u0,
+                total-distributions-received: u0,
+                last-activity-height: u0,
+                performance-rating: u50,
+            }
+                (get-host-analytics podcast-id host)
+            ))
+        )
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (asserts! (<= activity-score u100) ERR-INVALID-ACTIVITY-SCORE)
+        (map-set host-analytics {
+            podcast-id: podcast-id,
+            host: host,
+        } {
+            activity-score: activity-score,
+            episodes-contributed: (get episodes-contributed current-analytics),
+            total-distributions-received: (get total-distributions-received current-analytics),
+            last-activity-height: burn-block-height,
+            performance-rating: (get performance-rating current-analytics),
+        })
+        (ok true)
+    )
+)
+
+(define-public (record-episode-contribution
+        (podcast-id uint)
+        (host principal)
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id host) ERR-HOST-NOT-FOUND))
+            (current-analytics (default-to {
+                activity-score: u0,
+                episodes-contributed: u0,
+                total-distributions-received: u0,
+                last-activity-height: u0,
+                performance-rating: u50,
+            }
+                (get-host-analytics podcast-id host)
+            ))
+        )
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (map-set host-analytics {
+            podcast-id: podcast-id,
+            host: host,
+        } {
+            activity-score: (get activity-score current-analytics),
+            episodes-contributed: (+ (get episodes-contributed current-analytics) u1),
+            total-distributions-received: (get total-distributions-received current-analytics),
+            last-activity-height: burn-block-height,
+            performance-rating: (get performance-rating current-analytics),
+        })
+        (ok true)
+    )
+)
+
+(define-public (update-performance-rating
+        (podcast-id uint)
+        (host principal)
+        (rating uint)
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id host) ERR-HOST-NOT-FOUND))
+            (current-analytics (default-to {
+                activity-score: u0,
+                episodes-contributed: u0,
+                total-distributions-received: u0,
+                last-activity-height: u0,
+                performance-rating: u50,
+            }
+                (get-host-analytics podcast-id host)
+            ))
+        )
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (asserts! (<= rating u100) ERR-INVALID-ACTIVITY-SCORE)
+        (map-set host-analytics {
+            podcast-id: podcast-id,
+            host: host,
+        } {
+            activity-score: (get activity-score current-analytics),
+            episodes-contributed: (get episodes-contributed current-analytics),
+            total-distributions-received: (get total-distributions-received current-analytics),
+            last-activity-height: (get last-activity-height current-analytics),
+            performance-rating: rating,
         })
         (ok true)
     )
