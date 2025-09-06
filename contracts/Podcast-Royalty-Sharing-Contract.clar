@@ -286,6 +286,8 @@
 (define-constant ERR-VOTING-ENDED (err u108))
 (define-constant ERR-PROPOSAL-NOT-PASSED (err u109))
 (define-constant ERR-INVALID-ACTIVITY-SCORE (err u110))
+(define-constant ERR-MILESTONE-ALREADY-CLAIMED (err u111))
+(define-constant ERR-MILESTONE-NOT-REACHED (err u112))
 
 (define-map proposals
     { proposal-id: uint }
@@ -317,6 +319,20 @@
 )
 
 (define-data-var next-proposal-id uint u1)
+
+(define-map revenue-milestones
+    {
+        podcast-id: uint,
+        milestone-amount: uint,
+    }
+    {
+        reward-percentage: uint,
+        claimed: bool,
+        achieved-at: (optional uint),
+    }
+)
+
+(define-data-var milestone-thresholds (list 5 uint) (list u1000000 u5000000 u10000000 u25000000 u50000000))
 
 (define-map host-analytics
     {
@@ -354,6 +370,20 @@
         podcast-id: podcast-id,
         host: host,
     })
+)
+
+(define-read-only (get-milestone
+        (podcast-id uint)
+        (milestone-amount uint)
+    )
+    (map-get? revenue-milestones {
+        podcast-id: podcast-id,
+        milestone-amount: milestone-amount,
+    })
+)
+
+(define-read-only (get-milestone-thresholds)
+    (var-get milestone-thresholds)
 )
 
 (define-public (create-proposal
@@ -559,5 +589,118 @@
             performance-rating: rating,
         })
         (ok true)
+    )
+)
+
+(define-public (setup-milestones (podcast-id uint))
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-NOT-AUTHORIZED))
+            (thresholds (var-get milestone-thresholds))
+        )
+        (fold setup-milestone-folder thresholds podcast-id)
+        (ok true)
+    )
+)
+
+(define-private (setup-milestone-folder
+        (threshold uint)
+        (podcast-id uint)
+    )
+    (let ((reward-percentage (if (is-eq threshold u1000000)
+            u5
+            (if (is-eq threshold u5000000)
+                u10
+                (if (is-eq threshold u10000000)
+                    u15
+                    (if (is-eq threshold u25000000)
+                        u20
+                        u25
+                    )
+                )
+            )
+        )))
+        (map-set revenue-milestones {
+            podcast-id: podcast-id,
+            milestone-amount: threshold,
+        } {
+            reward-percentage: reward-percentage,
+            claimed: false,
+            achieved-at: none,
+        })
+        podcast-id
+    )
+)
+
+(define-public (check-milestone-achievement (podcast-id uint))
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (total-revenue (get total-revenue podcast))
+            (thresholds (var-get milestone-thresholds))
+        )
+        (fold check-milestone-folder thresholds podcast-id)
+        (ok true)
+    )
+)
+
+(define-private (check-milestone-folder
+        (threshold uint)
+        (podcast-id uint)
+    )
+    (let (
+            (podcast-result (get-podcast podcast-id))
+            (milestone (map-get? revenue-milestones {
+                podcast-id: podcast-id,
+                milestone-amount: threshold,
+            }))
+        )
+        (match podcast-result
+            podcast (let ((total-revenue (get total-revenue podcast)))
+                (match milestone
+                    milestone-data (if (and (>= total-revenue threshold) (is-none (get achieved-at milestone-data)))
+                        (begin
+                            (map-set revenue-milestones {
+                                podcast-id: podcast-id,
+                                milestone-amount: threshold,
+                            } {
+                                reward-percentage: (get reward-percentage milestone-data),
+                                claimed: (get claimed milestone-data),
+                                achieved-at: (some burn-block-height),
+                            })
+                            podcast-id
+                        )
+                        podcast-id
+                    )
+                    podcast-id
+                )
+            )
+            podcast-id
+        )
+    )
+)
+
+(define-public (claim-milestone-reward
+        (podcast-id uint)
+        (milestone-amount uint)
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-NOT-AUTHORIZED))
+            (milestone (unwrap! (get-milestone podcast-id milestone-amount)
+                ERR-MILESTONE-NOT-REACHED
+            ))
+            (reward-amount (/ (* milestone-amount (get reward-percentage milestone)) u100))
+        )
+        (asserts! (not (get claimed milestone)) ERR-MILESTONE-ALREADY-CLAIMED)
+        (asserts! (is-some (get achieved-at milestone)) ERR-MILESTONE-NOT-REACHED)
+        (map-set revenue-milestones {
+            podcast-id: podcast-id,
+            milestone-amount: milestone-amount,
+        } {
+            reward-percentage: (get reward-percentage milestone),
+            claimed: true,
+            achieved-at: (get achieved-at milestone),
+        })
+        (as-contract (stx-transfer? reward-amount tx-sender tx-sender))
     )
 )
