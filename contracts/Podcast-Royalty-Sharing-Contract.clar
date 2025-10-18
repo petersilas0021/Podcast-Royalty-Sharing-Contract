@@ -288,6 +288,9 @@
 (define-constant ERR-INVALID-ACTIVITY-SCORE (err u110))
 (define-constant ERR-MILESTONE-ALREADY-CLAIMED (err u111))
 (define-constant ERR-MILESTONE-NOT-REACHED (err u112))
+(define-constant ERR-SCHEDULE-NOT-FOUND (err u113))
+(define-constant ERR-SCHEDULE-NOT-DUE (err u114))
+(define-constant ERR-SCHEDULE-ALREADY-EXISTS (err u115))
 
 (define-map proposals
     { proposal-id: uint }
@@ -333,6 +336,16 @@
 )
 
 (define-data-var milestone-thresholds (list 5 uint) (list u1000000 u5000000 u10000000 u25000000 u50000000))
+
+(define-map distribution-schedules
+    { podcast-id: uint }
+    {
+        interval-blocks: uint,
+        last-distribution-height: uint,
+        auto-distribute-enabled: bool,
+        minimum-amount: uint,
+    }
+)
 
 (define-map host-analytics
     {
@@ -384,6 +397,23 @@
 
 (define-read-only (get-milestone-thresholds)
     (var-get milestone-thresholds)
+)
+
+(define-read-only (get-distribution-schedule (podcast-id uint))
+    (map-get? distribution-schedules { podcast-id: podcast-id })
+)
+
+(define-read-only (is-distribution-due (podcast-id uint))
+    (let ((schedule (map-get? distribution-schedules { podcast-id: podcast-id })))
+        (match schedule
+            schedule-data (let ((next-distribution (+ (get last-distribution-height schedule-data)
+                    (get interval-blocks schedule-data)
+                )))
+                (>= burn-block-height next-distribution)
+            )
+            false
+        )
+    )
 )
 
 (define-public (create-proposal
@@ -702,5 +732,99 @@
             achieved-at: (get achieved-at milestone),
         })
         (as-contract (stx-transfer? reward-amount tx-sender tx-sender))
+    )
+)
+
+(define-public (create-distribution-schedule
+        (podcast-id uint)
+        (interval-blocks uint)
+        (minimum-amount uint)
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-NOT-AUTHORIZED))
+            (existing-schedule (get-distribution-schedule podcast-id))
+        )
+        (asserts! (is-none existing-schedule) ERR-SCHEDULE-ALREADY-EXISTS)
+        (asserts! (> interval-blocks u0) ERR-INVALID-PERCENTAGE)
+        (map-set distribution-schedules { podcast-id: podcast-id } {
+            interval-blocks: interval-blocks,
+            last-distribution-height: burn-block-height,
+            auto-distribute-enabled: true,
+            minimum-amount: minimum-amount,
+        })
+        (ok true)
+    )
+)
+
+(define-public (update-distribution-schedule
+        (podcast-id uint)
+        (interval-blocks uint)
+        (minimum-amount uint)
+        (enabled bool)
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-NOT-AUTHORIZED))
+            (schedule (unwrap! (get-distribution-schedule podcast-id)
+                ERR-SCHEDULE-NOT-FOUND
+            ))
+        )
+        (asserts! (> interval-blocks u0) ERR-INVALID-PERCENTAGE)
+        (map-set distribution-schedules { podcast-id: podcast-id } {
+            interval-blocks: interval-blocks,
+            last-distribution-height: (get last-distribution-height schedule),
+            auto-distribute-enabled: enabled,
+            minimum-amount: minimum-amount,
+        })
+        (ok true)
+    )
+)
+
+(define-public (execute-scheduled-distribution
+        (podcast-id uint)
+        (amount uint)
+        (hosts (list 10 principal))
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (schedule (unwrap! (get-distribution-schedule podcast-id)
+                ERR-SCHEDULE-NOT-FOUND
+            ))
+        )
+        (asserts! (get auto-distribute-enabled schedule) ERR-NOT-AUTHORIZED)
+        (asserts! (>= amount (get minimum-amount schedule))
+            ERR-INSUFFICIENT-FUNDS
+        )
+        (asserts! (is-distribution-due podcast-id) ERR-SCHEDULE-NOT-DUE)
+        (try! (distribute-revenue-to-hosts podcast-id amount hosts))
+        (map-set distribution-schedules { podcast-id: podcast-id } {
+            interval-blocks: (get interval-blocks schedule),
+            last-distribution-height: burn-block-height,
+            auto-distribute-enabled: (get auto-distribute-enabled schedule),
+            minimum-amount: (get minimum-amount schedule),
+        })
+        (ok true)
+    )
+)
+
+(define-public (toggle-auto-distribution
+        (podcast-id uint)
+        (enabled bool)
+    )
+    (let (
+            (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
+            (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-NOT-AUTHORIZED))
+            (schedule (unwrap! (get-distribution-schedule podcast-id)
+                ERR-SCHEDULE-NOT-FOUND
+            ))
+        )
+        (map-set distribution-schedules { podcast-id: podcast-id } {
+            interval-blocks: (get interval-blocks schedule),
+            last-distribution-height: (get last-distribution-height schedule),
+            auto-distribute-enabled: enabled,
+            minimum-amount: (get minimum-amount schedule),
+        })
+        (ok true)
     )
 )
