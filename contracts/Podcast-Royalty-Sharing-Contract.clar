@@ -4,6 +4,7 @@
 (define-constant ERR-HOST-EXISTS (err u103))
 (define-constant ERR-HOST-NOT-FOUND (err u104))
 (define-constant ERR-INSUFFICIENT-FUNDS (err u105))
+(define-constant ERR-PODCAST-PAUSED (err u116))
 
 (define-data-var contract-owner principal tx-sender)
 
@@ -38,6 +39,11 @@
     }
 )
 
+(define-map podcast-status
+    { podcast-id: uint }
+    { paused: bool }
+)
+
 (define-data-var next-podcast-id uint u1)
 (define-data-var next-distribution-id uint u1)
 
@@ -57,6 +63,15 @@
 
 (define-read-only (get-distribution (distribution-id uint))
     (map-get? revenue-distributions { distribution-id: distribution-id })
+)
+
+(define-read-only (is-podcast-paused (podcast-id uint))
+    (let ((status (map-get? podcast-status { podcast-id: podcast-id })))
+        (match status
+            status-data (get paused status-data)
+            false
+        )
+    )
 )
 
 (define-public (create-podcast (name (string-ascii 64)))
@@ -152,6 +167,17 @@
     )
 )
 
+(define-public (set-podcast-paused
+        (podcast-id uint)
+        (paused bool)
+    )
+    (let ((podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST)))
+        (asserts! (is-eq tx-sender (var-get contract-owner)) ERR-NOT-AUTHORIZED)
+        (map-set podcast-status { podcast-id: podcast-id } { paused: paused })
+        (ok true)
+    )
+)
+
 (define-public (distribute-revenue
         (podcast-id uint)
         (amount uint)
@@ -160,6 +186,7 @@
             (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
             (distribution-id (var-get next-distribution-id))
         )
+        (asserts! (not (is-podcast-paused podcast-id)) ERR-PODCAST-PAUSED)
         (asserts! (>= (stx-get-balance tx-sender) amount) ERR-INSUFFICIENT-FUNDS)
         (map-set revenue-distributions { distribution-id: distribution-id } {
             podcast-id: podcast-id,
@@ -181,6 +208,7 @@
             (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-HOST-NOT-FOUND))
             (earnings (get earnings host-info))
         )
+        (asserts! (not (is-podcast-paused podcast-id)) ERR-PODCAST-PAUSED)
         (asserts! (> earnings u0) ERR-INSUFFICIENT-FUNDS)
         (map-set podcast-hosts {
             podcast-id: podcast-id,
@@ -231,6 +259,7 @@
             (podcast (unwrap! (get-podcast podcast-id) ERR-NO-PODCAST))
             (distribution-id (var-get next-distribution-id))
         )
+        (asserts! (not (is-podcast-paused podcast-id)) ERR-PODCAST-PAUSED)
         (asserts! (>= (stx-get-balance tx-sender) amount) ERR-INSUFFICIENT-FUNDS)
         (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
         (map distribute-to-host
@@ -268,6 +297,7 @@
             (host-info (unwrap! (get-host-info podcast-id tx-sender) ERR-HOST-NOT-FOUND))
             (earnings (get earnings host-info))
         )
+        (asserts! (not (is-podcast-paused podcast-id)) ERR-PODCAST-PAUSED)
         (asserts! (> earnings u0) ERR-INSUFFICIENT-FUNDS)
         (map-set podcast-hosts {
             podcast-id: podcast-id,
@@ -721,6 +751,7 @@
             ))
             (reward-amount (/ (* milestone-amount (get reward-percentage milestone)) u100))
         )
+        (asserts! (not (is-podcast-paused podcast-id)) ERR-PODCAST-PAUSED)
         (asserts! (not (get claimed milestone)) ERR-MILESTONE-ALREADY-CLAIMED)
         (asserts! (is-some (get achieved-at milestone)) ERR-MILESTONE-NOT-REACHED)
         (map-set revenue-milestones {
@@ -792,6 +823,7 @@
                 ERR-SCHEDULE-NOT-FOUND
             ))
         )
+        (asserts! (not (is-podcast-paused podcast-id)) ERR-PODCAST-PAUSED)
         (asserts! (get auto-distribute-enabled schedule) ERR-NOT-AUTHORIZED)
         (asserts! (>= amount (get minimum-amount schedule))
             ERR-INSUFFICIENT-FUNDS
